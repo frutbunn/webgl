@@ -590,7 +590,7 @@ texture = null;
 
 // Directions are: +x, +y, +z, -x, -y, -z	
 //+x = RIGHT = 0    , +y = ABOVE = 2   , +z = FRONT = 4   , -x = LEFT = 1    , -y = BELOW = 3   , -z = BEHIND = 5
-var cubemap_filename = ['st/cube03_0.png', 'st/cube03_2.png', 'st/cube03_4.png', 'st/cube03_1.png', 'st/cube03_3.png', 'st/cube03_5.png'];
+var cubemap_filename = ['../st/cube03_0.png', '../st/cube03_2.png', '../st/cube03_4.png', '../st/cube03_1.png', '../st/cube03_3.png', '../st/cube03_5.png'];
 
 var cubemap_image = [null, null, null, null, null, null];
 var cubemapTexture = null;
@@ -605,7 +605,7 @@ var tuneSrc;
 var analyser;
 var frequencyData;
 
-var tuneName = "music/F14A - Rebels - 64k.mp3";
+var tuneName = "../music/F14A - Rebels - 64k.mp3";
 
 function startMusic() {
     try {
@@ -816,20 +816,20 @@ function setURLoptions() {
 
     switch(options.TUNE) {
         case '1':
-            tuneName = "music/XAOC - Bon^2.mp3";
+            tuneName = "../music/XAOC - Bon^2.mp3";
             break;
 
         case '2':
-            tuneName = "music/synapse - firebug & cce - 4k.mp3"
+            tuneName = "../music/synapse - firebug & cce - 4k.mp3"
             break;
 
         case '3':
-            tuneName = "music/Hurtquake - excess - 60fps.mp3"
+            tuneName = "../music/Hurtquake - excess - 60fps.mp3"
             break;
 
         case '0':
         default:
-            tuneName = "music/F14A - Rebels - 64k.mp3";
+            tuneName = "../music/F14A - Rebels - 64k.mp3";
             break;
     }
 }
@@ -1199,7 +1199,7 @@ function initShaders() {
 
         gl.bindTexture(gl.TEXTURE_2D, null);
     }
-	image.src = 'st/tex07.jpg';
+	image.src = '../st/tex07.jpg';
 
 
 	// Init cubemap
@@ -1233,7 +1233,7 @@ function initShaders() {
 
         gl.bindTexture(gl.TEXTURE_2D, null);
     }
-    image2.src = 'textures/knighthawks_font.png';
+    image2.src = '../textures/knighthawks_font.png';
 
 
     prgAnimation.iChannel3 = gl.getUniformLocation(prgAnimation, "iChannel3");
