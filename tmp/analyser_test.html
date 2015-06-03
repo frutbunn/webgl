@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en-US">
+
+<!--
+
+<//-->
+
+<head>
+<style type="text/css">
+* {
+	background-color: black;
+    	margin: 0;
+    	padding: 0;
+}
+
+</style>
+<title>Visualizer</title>
+
+<script id="code-js" type="text/javascript">
+
+var startTime = null;
+
+var canvas = null;
+var ctx2d = null;
+
+
+
+function setCanvasSize() {
+	var scale = 0.5625;
+
+	var width = window.innerWidth;
+	var height = window.innerHeight;
+	var top=0, left=0;
+
+
+	var correctWidth = width;
+	var correctHeight = width*scale;
+
+	if (correctHeight>height) {
+		correctWidth = (1 / scale)*height;
+		correctHeight = height;
+	}
+
+	if(correctWidth<width)
+		left=(width-correctWidth)/2;
+
+	if (correctHeight<height)
+		top=(height-correctHeight)/2;
+
+	console.log(top);
+	console.log(left);
+
+	canvas.style.position = "fixed";
+
+	canvas.style.top = top + "px";
+	canvas.style.left = left+"px";
+
+	canvas.width = correctWidth;
+	canvas.height = correctHeight;
+
+	// TODO remove these vars
+	canvas_width = canvas.width;
+	canvas_height = canvas.height;
+}
+
+function resize() {
+	setCanvasSize();
+}
+
+function main() {
+
+
+
+	canvas = getCanvas('canvas-id');
+	if (!canvas) {console.log("ERROR"); return;}
+	ctx2d = canvas.getContext("2d");
+	setCanvasSize();
+
+
+/*
+	var audio = new Audio();
+	audio.src = 'PC-11-Lerper.mp3';
+
+	var ctx = new AudioContext();
+	var analyser = ctx.createAnalyser();
+	var source = ctx.createMediaElementSource(audio);
+	source.connect(analyser);
+	analyser.connect(ctx.destination);
+
+	audio.play();
+*/
+
+/*
+	tune = new Audio();
+	tune.src = 'PC-11-Lerper.mp3';
+
+	var audio_ctx = new AudioContext();
+	analyser = audio_ctx.createAnalyser();
+	tuneSrc = audio_ctx.createMediaElementSource(tune);
+	tuneSrc.connect(analyser);
+	analyser.connect(audio_ctx.destination);
+
+	tune.play();
+*/
+
+
+	startMusic();
+
+
+	addEventListener("dblclick", function() {toggleFullScreen();});
+	renderLoop();
+}
+
+
+
+var audio_ctx = null;
+var tune;
+var tuneSrc;
+var analyser;
+var frequencyData;
+function startMusic() {
+	try {
+		audio_ctx = new AudioContext();
+	} catch(e) {
+		console.log(e);
+	}
+
+	tune = new Audio();
+	tune.src = "music/PC-11-Lerper.mp3";
+	tune.loop = true;
+	tune.play();
+
+	tuneSrc = audio_ctx.createMediaElementSource(tune);
+	analyser = audio_ctx.createAnalyser();
+	//analyser.fftSize = 32;
+	tuneSrc.connect(analyser);
+	analyser.connect(audio_ctx.destination);
+
+	frequencyData = new Uint8Array(analyser.frequencyBinCount);
+}
+
+function getFreq() {
+
+	analyser.getByteFrequencyData(frequencyData);
+
+  	return [
+  	frequencyData[Math.floor((frequencyData.length/8)*1)],
+  	frequencyData[Math.floor((frequencyData.length/8)*2)],
+  	frequencyData[Math.floor((frequencyData.length/8)*3)],
+  	frequencyData[Math.floor((frequencyData.length/8)*4)],
+  	frequencyData[Math.floor((frequencyData.length/8)*5)],
+  	frequencyData[Math.floor((frequencyData.length/8)*6)],
+  	frequencyData[Math.floor((frequencyData.length/8)*7)]
+  	];
+}
+
+
+function toggleFullScreen() {
+  if (!document.fullscreenElement &&    // alternative standard method
+      !document.mozFullScreenElement && !document.webkitFullscreenElement && !document.msFullscreenElement ) {  // current working methods
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen();
+    } else if (document.documentElement.msRequestFullscreen) {
+      document.documentElement.msRequestFullscreen();
+    } else if (document.documentElement.mozRequestFullScreen) {
+      document.documentElement.mozRequestFullScreen();
+    } else if (document.documentElement.webkitRequestFullscreen) {
+      document.documentElement.webkitRequestFullscreen(Element.ALLOW_KEYBOARD_INPUT);
+    }
+  } else {
+    if (document.exitFullscreen) {
+      document.exitFullscreen();
+    } else if (document.msExitFullscreen) {
+      document.msExitFullscreen();
+    } else if (document.mozCancelFullScreen) {
+      document.mozCancelFullScreen();
+    } else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    }
+  }
+}
+
+requestAnimFrame = (function() {
+	return window.requestAnimationFrame || window.webkitRequestAnimationFrame || window.mozRequestAnimationFrame || window.oRequestAnimationFrame || window.msRequestAnimationFrame
+	 || function(callback, element) { window.setTimeout(callback, 1000/60); };
+})();
+
+function renderLoop() {
+	requestAnimFrame(renderLoop);
+
+  if (startTime === null) {startTime = +new Date();}
+  var currentTime = ( (+new Date() ) - startTime) / 1000;
+
+
+  	analyser.getByteFrequencyData(frequencyData);
+  	console.log(frequencyData.length);
+  	//console.log(frequencyData[0]);
+
+  	//var str = "";
+  	//for(var i=0; i<frequencyData.length; i++) 
+  	//	str += String(frequencyData[i]) + ', ';
+  	//console.log(str);
+
+  	
+
+  	var f = getFreq();
+  	console.log(f);
+
+  	ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+  	for(var i=0; i<f.length; i++) {
+  		ctx2d.fillStyle="#FF0000";
+  		ctx2d.fillRect(i*(canvas.width/f.length),400,canvas.width/f.length,-256);
+
+  		ctx2d.fillStyle="#FFDFFF";
+  		ctx2d.fillRect(i*(canvas.width/f.length)-1,400,canvas.width/f.length,-f[i]);
+  	}
+  	ctx2d.stroke();
+
+
+	//console.log(currentTime);
+}
+
+function getCanvas(name) {
+        var canvas = document.getElementById(name);
+
+        if (canvas == null) {
+            alert('there is no canvas on this page');
+            return null;
+        }
+
+        return canvas;
+	}
+
+</script>
+        
+</head>
+	<body onLoad='main()' onResize='resize()' margin:0>
+
+
+        <canvas id='canvas-id' width='512' height='512' style="border:0px solid #000000;">
+            Your browser does not support the HTML5 canvas element.
+        </canvas>
+	</body>
+</html>

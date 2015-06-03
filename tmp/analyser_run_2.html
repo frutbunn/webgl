@@ -1,0 +1,1291 @@
+<!DOCTYPE html>
+<html lang="en-US">
+
+<!--
+
+Some fun with WebGL in Chrome!
+
+<//-->
+
+<head>
+<style type="text/css">
+* {
+	background-color: black;
+    	margin: 0;
+    	padding: 0;
+}
+
+</style>
+
+<script id="shader-animation-fs" type="x-shader/x-fragment">
+#ifdef GL_ES
+	precision highp float;
+#endif
+
+uniform vec2 uCanvasResolution;
+
+uniform vec3 iResolution;
+uniform float iGlobalTime;
+
+uniform vec2 iAspect;
+
+uniform sampler2D iChannel0;
+uniform samplerCube iChannel1;
+
+uniform float ufreq[7];         // Sound array
+
+//////////////////////////////////////////////////////////////////
+
+uniform sampler2D iChannel2;    // Knighthawks font
+uniform sampler2D iChannel3;    // Scrolltext data.
+
+uniform float iScrolltextLength;
+uniform int iEffect;
+uniform float iTotalScrollingTimeInSeconds;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define MAX_STEPS           110
+#define MAX_DISTANCE        8.
+#define MARCHING_STEP_INC   .35
+#define EPSILON .015
+
+#define COLORS  4
+
+#define PI 3.14159265358979323846
+#define TIMER(sec, min, max) (((mod(iGlobalTime, (sec)) * ((max) - (min))) / (sec)) + (min))
+
+float globalTimer = TIMER(80., 0., 60.);
+#define SCENE1  0.
+#define SCENE2  30.
+#define SCENE3  40.
+#define SCENE4  50.
+#define SCENE5  60.
+
+float scol[7];
+float b1, b2, b3, b4;
+
+vec4 texSphere(sampler2D t, vec3 p, vec3 n, float scale) {
+    return texture2D(t, p.yz * scale) * abs (n.x)
+     + texture2D(t, p.xz * scale) * abs (n.y)
+     + texture2D(t, p.xy * scale) * abs (n.z);
+}
+
+mat2 mm2(in float a) {
+    float c = cos(a), s = sin(a);
+    
+    return mat2(c, s, -s, c);
+}
+
+float smin(in float a, in float b ) {
+    const float k=12.; //.14
+    float res = exp( -k*a ) + exp( -k*b );
+    
+    return -log( res )/k;
+}
+
+float map(in vec3 p, out float o[COLORS]) {   
+#   define SS 1.5
+    float cx = cos(SS*p.x), cy = cos(SS*p.y), cz = cos(SS*p.z);
+    float sx = sin(SS*p.x), sy = sin(SS*p.y), sz = sin(SS*p.z);
+    
+    float lpxz = length(p.xz);
+    
+//    float b1 = scol[0]*scol[4]*.5;
+//    float b2 = scol[1]*scol[4]*.7;
+//    float b3 = scol[5]+(scol[2]*scol[4]*.7);
+//    float b4 = scol[6]+(scol[3]*scol[4]*.7);
+
+    o[0] = (length(vec2((lpxz-1.5)-(b1), p.y))-.15) + cx*cy*sz;
+    o[1] = (length(vec2((lpxz-1.5)-(b2), p.y))-.15) + cx*cy*cz;
+    o[2] = (length(vec2((lpxz-1.5)-(b3), p.y))-.25) + cx*sy*sz;
+    o[3] = (length(vec2((lpxz-1.5)-(b4), p.y))-.25) + sx*sy*sz;
+
+    return smin(o[0]*1.5, smin(o[1], smin(o[2], o[3])));
+}
+
+float scene(in vec3 p, out float o[COLORS]) {
+    return map(p, o);
+}
+
+float scene(in vec3 p) {
+    float o[COLORS]; return map(p, o);
+}
+
+void colorize(in float depth, in vec3 color, out float current_depth, out vec3 current_color) {
+    const float max_displace = .25;
+    const float max_color_bleed = 1.25;
+    
+    float c = smoothstep(depth-max_color_bleed, depth+max_color_bleed, current_depth);
+    float d = smoothstep(depth-max_displace, depth+max_displace, current_depth);
+    
+    current_depth = depth*(d) + current_depth*(1.-d);
+    current_color = (1.-c)*current_color + (c)*color;
+}
+
+float rayMarch(in vec3 origin, in vec3 ray, out vec3 col) {
+    float o[COLORS];
+    
+    float t = 0.;
+    for (int i=0; i < MAX_STEPS; i++) {
+        float d = scene(origin + ray*t, o);
+
+        if (d < EPSILON) 
+            break;
+
+        t += d*MARCHING_STEP_INC;
+
+        if (t > MAX_DISTANCE) 
+            break;
+    }
+
+    float cd = 1000.;
+    colorize(o[0], vec3(scol[0]*.4, scol[6]*.3, scol[3]*.3), cd, col );
+    colorize(o[1], vec3(scol[4]*.3, scol[4]*.3, scol[4]*.3), cd, col );
+    colorize(o[2], vec3(scol[1]*.3, scol[5]*.3, scol[4]*.3), cd, col );
+    colorize(o[3], vec3(scol[2]*.3, scol[4]*.3, scol[6]*.6), cd, col );
+
+    return t;
+}
+
+float ambientOcculation(in vec3 origin, in vec3 ray) {
+    const float delta = .1;
+    const int samples = 6;
+    float r = 0.;
+    
+    for (int i=1; i <= samples; i++) {
+        float t = delta * float(i);
+        float d = scene(origin + ray*t);
+        float len = abs(t - d);
+        r += len * pow(2.0, -float(i));
+    }
+    
+    return r;
+}
+
+float shadowSample(in vec3 origin, in vec3 ray) {
+    float r = 1.;
+    float t = 1.;
+    const int samples = 6;
+    
+    for (int i=0; i <= samples; i++) {
+        float d = scene(origin + ray*t);
+        r = min(r, 2.0*d/t);
+        t += d;
+    }
+    
+    return r;
+}
+
+vec3 getNormal(in vec3 p, in float ep) {
+    float d0 = scene(p);
+    float dX = scene(p - vec3(ep, 0.0, 0.0));
+    float dY = scene(p - vec3(0.0, ep, 0.0));
+    float dZ = scene(p - vec3(0.0, 0.0, ep));
+
+    return normalize(vec3(dX-d0, dY-d0, dZ-d0));
+}
+
+vec3 starfield(in vec2 uv) {
+    vec3 col = vec3(.0, 0., 0.);
+
+    vec3 ray = vec3(uv*.8, .7);
+    ray.xy*=mm2(TIMER(10. ,0., -PI*2.));
+    ray.zy*=mm2(PI*2.1);
+
+    vec3 t = ray/max(abs(ray.x), abs(ray.y));
+    vec3 p = 1.*t+.5;
+    
+    if (globalTimer>SCENE4 && globalTimer<=SCENE5) {
+        float dd = PI, c = cos(dd*p.y+dd), s = sin(dd*p.y+dd);
+        p = vec3(mat2(c,-s,s,c)*p.xz,p.y);
+    }
+    
+    for (int i=0; i<3; i++) {
+        vec4 n = vec4(fract(sin(dot((vec2(floor(p.xy*30.334))), vec2(12.9898, 78.233)))*43758.5453)+.5);
+        float z = fract(cos(n.x)-sin(n.y)-iGlobalTime*.2);       
+        float d = 60.*z-p.z;
+        float j = max(0., 1.5-3.*length(fract(p.xy)-.5));
+        vec3 c = max(vec3(0), vec3(1.0-abs(d))*(1./t.z*2.));
+        
+        col += (1.-z)*c*j;
+        p += t;
+    }
+
+    if (globalTimer>SCENE2 && globalTimer<=SCENE4) {
+        col.r *= scol[0];
+        col*=length(uv*.5);
+    } else if (globalTimer>SCENE4 && globalTimer<=SCENE5) {
+        col.g*=4.;
+        col *= length(uv);
+    }     
+
+    return col;
+}
+
+vec4 scroller(in vec2 st, in vec2 resolution, in vec4 fragColor) {
+    vec4 col = vec4(0.);
+
+    float ROWS, COLUMNS;
+    float number_of_chars_in_scroller = iScrolltextLength;
+    float total_scrolling_time_for_scrolltext_in_seconds = iTotalScrollingTimeInSeconds;
+
+    // EFFECTS:
+    int effect = iEffect;
+    int center_scroller, repeat_y;
+
+    vec2 tmp_st = st;
+    vec2 ratio = iResolution.xy/100.;
+    float wobble1 = cos(mod(iGlobalTime*2., PI*2.));
+
+    if (effect == 1) {
+        // Big scroller with wibble.
+        st.x -= sin((tmp_st.y/ratio.y)*0.02)*wobble1*ratio.y*20.;
+        st.y -= sin((tmp_st.x/ratio.x)*0.02)*wobble1*ratio.x*20.;
+        ROWS = 1.; 
+        COLUMNS = 4.;
+        center_scroller = 1;
+        repeat_y = 0;
+    } else if (effect == 2) {
+        // Rotate
+        st.x -= sin((tmp_st.y/ratio.y)*0.02)*wobble1*ratio.y*40.;
+        st.y -= sin((tmp_st.x/ratio.x)*0.02)*wobble1*ratio.x*40.;
+        st -= iResolution.xy/2.;
+        st.xy*=mm2(TIMER(10. ,0., PI*2.));
+        st += iResolution.xy/2.;
+        center_scroller = 1;
+        ROWS = 5.;
+        COLUMNS = 20.;
+        repeat_y = 1;
+    } else if (effect == 3) {
+        // Big scroller with wibble & zoom.
+        st.x -= sin((tmp_st.y/ratio.y)*0.02)*wobble1*ratio.y*20.;
+        st.y -= sin((tmp_st.x/ratio.x)*0.02)*wobble1*ratio.x*20.;
+        ROWS = 4. - (3.0*cos(iGlobalTime*2.)); 
+        COLUMNS = 8. - (7.0*cos(iGlobalTime*2.));
+        center_scroller = 1;
+        repeat_y = 0;
+    } else if (effect == 4) {
+        // Needs work.
+        st.x -= sin((tmp_st.y/ratio.y)*0.1)*wobble1*ratio.y*10.;
+        st.y -= cos((tmp_st.x/ratio.x)*0.1)*wobble1*ratio.x*(sin(mod(iGlobalTime, 100.))*15.);            
+        ROWS = 3.;
+        COLUMNS = 8.;
+        center_scroller = 1;
+        repeat_y=1;
+    } else {
+        // Basic scroller - centered, none distorting line of text at bottom of screen.
+        ROWS = 8.;
+        COLUMNS = 10.;
+        center_scroller = 0;
+        repeat_y=0;
+    }
+
+
+    // Get X and Y axis of current pixel:
+    // & Scroll left:
+    st.x+= TIMER( (total_scrolling_time_for_scrolltext_in_seconds/number_of_chars_in_scroller), 0., iResolution.x/COLUMNS);
+    st.x+= (iResolution.x/COLUMNS)*.25; // Add 25% letter width, so should bake correctly.
+    
+    // Center Y.
+    if (center_scroller == 1) st.y-=(iResolution.y/2.)-(iResolution.y/ROWS/2.);
+
+    // Get letter from scrolltext:
+    float sx = floor(TIMER(total_scrolling_time_for_scrolltext_in_seconds , 0., number_of_chars_in_scroller));
+    float sy = 0.;
+
+#   define WIDTH_OF_FONT_IMAGE 2048.
+    sx+=floor( st.x/(iResolution.x/COLUMNS) );
+    vec2 luv= vec2(sx, 255.-sy) / vec2(WIDTH_OF_FONT_IMAGE, 256.);
+    luv.x+=(1. / WIDTH_OF_FONT_IMAGE)*.25; // Add 25% letter so should bake correctly.
+    float l = floor(texture2D(iChannel3, vec2(luv.x, luv.y)).r*256.);
+
+    // Repeat on X.
+    st.x = mod(st.x, iResolution.x/COLUMNS);
+
+    // Repeat on Y.
+    if (repeat_y == 1) st.y = mod(st.y, iResolution.y/ROWS);
+
+    // resolution COLUMNS * ROWS:
+#   define NUMBER_OF_CHARS_IN_FONT_IMAGE 64.
+    vec2 uv = vec2(st.x/(NUMBER_OF_CHARS_IN_FONT_IMAGE/COLUMNS) ,  st.y*ROWS);
+    uv /= iResolution.xy;
+
+    // Choose the char to render (this will change depending on x axis / COLUMNS) 
+    uv.x+=(1./NUMBER_OF_CHARS_IN_FONT_IMAGE)*l;
+
+    // Draw scroller pixel:
+    vec4 font_pix = texture2D(iChannel2, vec2(uv.x, uv.y));
+
+    col = mix(fragColor, font_pix, font_pix.a);
+
+    vec2 uv2 = gl_FragCoord.xy / iResolution.xy;  
+    uv2.y -= mod(iGlobalTime,1000.)*.3;
+
+    float j = 2000. - mod(iGlobalTime, 1000.)*2.5;
+    if (font_pix.a >.99 && font_pix.r > .99) 
+        col = vec4(sin((j*.01*uv2.y)*.5), sin((j*.02*uv2.y)*.5), sin((j*.03*uv2.y)*.5), 1.);
+
+    return col;
+}
+
+float f1(in float x) {
+    x = clamp(x, 0., 1.);  
+    return sqrt(1.-(x-1.)*(x-1.));
+}
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy / iResolution.xy) - vec2(.5);
+    uv.x *= (iResolution.x*iAspect.x) / iResolution.y * iAspect.y;
+
+#   define FMM 1.
+    scol[0] = f1(ufreq[0]*FMM);
+    scol[1] = f1(ufreq[1]*FMM);
+    scol[2] = f1(ufreq[2]*FMM);
+    scol[3] = f1(ufreq[3]*FMM);
+    scol[4] = f1(ufreq[4]*FMM);
+    scol[5] = f1(ufreq[5]*FMM);
+    scol[6] = f1(ufreq[6]*FMM);
+
+#   define MM 3.5 
+    scol[0]*=MM*scol[0]*scol[0];
+    scol[1]*=MM*scol[1]*scol[1];
+    scol[2]*=MM*scol[2]*scol[2];
+    scol[3]*=MM*scol[3]*scol[3];
+    scol[4]*=MM*scol[4]*scol[4];
+    scol[5]*=MM*scol[5]*scol[5];
+    scol[6]*=MM*scol[6]*scol[6];
+
+    b1 = scol[0]*scol[4]*.5;
+    b2 = scol[1]*scol[4]*.7;
+    b3 = scol[5]+(scol[2]*scol[4]*.7);
+    b4 = scol[6]+(scol[3]*scol[4]*.7);
+
+    vec2 uv2 = uv;
+   
+    if (globalTimer>SCENE2 && globalTimer<=SCENE4) {
+        float ts1 = abs(TIMER(5., -15.5, 15.5));
+        float ts2 = abs(TIMER(10., 15.5, -15.5));
+        uv2.y*=cos(uv2.y*-(ts1-ts2*1.));
+        uv2.x*=sin(uv2.x*-(ts1-ts2*1.));
+    }
+    
+    float o = min(TIMER(10., -PI*2., PI*2.), TIMER(10., PI*2., -PI*2.))+PI;    
+    float o2 = min(TIMER(20., -PI*2., PI*2.), TIMER(20., PI*2., -PI*2.))+PI;
+        
+    float o3 = min(TIMER(5., -PI*2., PI*2.), TIMER(5., PI*2., -PI*2.))+PI;
+    float o3b = min(TIMER(10., -PI*2., PI*2.), TIMER(10., PI*2., -PI*2.))+PI;
+        
+    uv.x+=cos(o)*.5;
+    uv.y+=cos(o2)*.3;
+    uv*= ( (1.5+cos(o3)) + (1.5+cos(o3b)) ) *.5;
+    
+    vec3 eye = vec3(0., 0., -5.);
+    vec3 light = vec3(3., -1.5, -8.5);
+    vec3 ray = vec3(uv.x, uv.y, 1.);
+    vec3 scene_color = vec3(0.);
+
+    float rx = TIMER(10. ,0., PI*2.);
+    float ry = TIMER(8. ,0., PI*2.);
+    float rz = TIMER(5. ,0., PI*2.);
+    
+    eye.zx*=mm2(rx); eye.xy*=mm2(rz); eye.zy*=mm2(ry);
+    light.zx*=mm2(rx); light.xy*=mm2(rz); light.zy*=mm2(ry);
+    ray.zx*=mm2(rx); ray.xy*=mm2(rz); ray.zy*=mm2(ry);
+    
+    float depth = rayMarch(eye, ray, scene_color);   
+    if (depth < MAX_DISTANCE) {
+        vec3 p = (eye + ray*depth);
+        
+        //float d_ep=length(p - depth);
+        //vec3 p_normal = getNormal(p, d_ep*d_ep*EPSILON*0.003);
+        vec3 p_normal = getNormal(p, EPSILON);
+        
+        vec3 light_dir = -normalize(light-p);
+        vec3 reflected_light_dir = reflect(-light_dir, -p_normal);
+
+        const float j=.003;
+        float shadow = shadowSample(p, -light_dir);
+        float attenuation = 1./(1. + j*pow( length(light-p), 2.0));
+        attenuation -= (1.-shadow)*.6;
+               
+        float ambient = pow(1.-ambientOcculation(p, -ray), 8.);
+        float diffuse = max(0., dot(light_dir, p_normal));
+        float lighting = max(0., (diffuse*.4 + ambient*.6)*attenuation);
+
+        vec3 reflectioncolor = textureCube(iChannel1, reflected_light_dir).rrr; //bbb
+        vec3 texcol = texSphere(iChannel0, .1*p, p_normal, 1.0 ).rgb*lighting;
+        scene_color = (clamp(mix(scene_color, reflectioncolor, max(0., 1.+(dot(-p_normal, ray)))), 0., 1.)+scene_color)*lighting;
+        scene_color = scene_color + texcol*.4;
+
+        //scene_color = vec3(attenuation);
+        //scene_color = vec3(shadow);
+        //scene_color = vec3(lighting);
+        //scene_color = vec3(ambient);
+        //scene_color = vec3(diffuse);
+        //scene_color = vec3(reflectioncolor);
+
+        //vec3 mc = mix(vec3(1., .8, .6), vec3(1., 1., 1.), abs(TIMER(60., -1., 1.)));
+        //mc = mix(mc, scene_color, abs(TIMER(30., -1., 1.)));
+        ////mc = smoothstep(mc, scene_color, mc-scene_color);
+        ////if ( (TIMER(10., 1., 3.)) >= 2.) 
+        //    scene_color = vec3(reflectioncolor*mc*shadow);
+        
+
+        scene_color *= max(dot(-p_normal,-ray), 0.);
+    } else {
+        scene_color=starfield(uv2);
+    }
+    
+    gl_FragColor = vec4(scene_color, 1.);
+    gl_FragColor = scroller(gl_FragCoord.xy, iResolution.xy, gl_FragColor);
+
+    //fragColor = vec4(pow(scene_color, vec3(1.)), 1.);
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+</script>
+
+<script id="shader-render-fs" type="x-shader/x-fragment">
+#ifdef GL_ES
+    precision highp float;
+#endif
+
+uniform vec3 iResolution;
+uniform float iGlobalTime;
+
+uniform sampler2D iChannel0;	// Off screen framebuffer
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define GAMMA 1.2
+#define CONTRAST 1.05
+#define SATURATION 1.1
+#define BRIGHTNESS 1.
+
+vec3 PostEffects(in vec3 rgb, in vec2 xy)
+{
+    rgb = pow(rgb, vec3(GAMMA));
+    rgb = mix(vec3(.5), mix(vec3(dot(vec3(.2125, .7154, .0721), rgb*BRIGHTNESS)), rgb*BRIGHTNESS, SATURATION), CONTRAST);    
+
+    return rgb;
+}
+
+
+void main( void )
+{
+    vec2 uv = gl_FragCoord.xy / iResolution.xy;
+    gl_FragColor = vec4(PostEffects(texture2D(iChannel0, uv).rgb, uv), 1.);
+ 
+    const float scanlines_height = .25;
+    float scanline = sin(uv.y*800.0)*0.04*scanlines_height;
+    gl_FragColor -= scanline;
+
+    gl_FragColor = vec4(gl_FragColor.rgb, 1.);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+</script>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+	attribute vec2 aVertexPosition;
+
+	void main(void) {
+		gl_Position = vec4(aVertexPosition, 0.0, 1.0);
+	}
+</script>
+
+<script id="code-js" type="text/javascript">
+
+var OFFSCREEN_WIDTH=1024, OFFSCREEN_HEIGHT=1024/2;
+var OFFSCREEN_ASPECT_X = 1.78, OFFSCREEN_ASPECT_Y = 0.5;
+
+var TOTAL_SCROLLING_TIME_IN_SECONDS = 110;
+
+var OUTPUT_SOUND = 1, SCROLLER = 0;
+
+var canvas = null;
+var gl = null;
+
+// Render to texture
+var offScreenFramebuffer;
+var offScreenTexture;
+var offScreenRenderbuffer;
+
+// Shader programs
+var prgAnimation, prgRender;
+
+var squareVertexBuffer, squareIndexBuffer;
+
+var vertices =  [
+        -1.0,1.0,
+        -1.0,-1.0,
+        1.0,-1.0,
+        1.0,1.0,];
+
+var indices = [3,2,1,3,1,0];
+
+texture = null;
+
+// Directions are: +x, +y, +z, -x, -y, -z	
+//+x = RIGHT = 0    , +y = ABOVE = 2   , +z = FRONT = 4   , -x = LEFT = 1    , -y = BELOW = 3   , -z = BEHIND = 5
+var cubemap_filename = 
+['st/cube03_0.png', 'st/cube03_2.png', 'st/cube03_4.png', 'st/cube03_1.png', 'st/cube03_3.png', 'st/cube03_5.png'];
+
+var cubemap_image = [null, null, null, null, null, null];
+var cubemapTexture = null;
+var cubemapTexturesToLoad;
+
+var fontTexture = null;
+var scrollText = null;
+
+var audio_ctx = null;
+var tune;
+var tuneSrc;
+var analyser;
+var frequencyData;
+
+var tuneName = "music/F14A - Rebels - 64k.mp3";
+
+function startMusic() {
+    try {
+        audio_ctx = new AudioContext();
+    } catch(e) {
+        console.log(e);
+    }
+
+    tune = new Audio();
+    tune.src = tuneName;
+
+    tune.loop = true;
+    tune.play();
+
+    tuneSrc = audio_ctx.createMediaElementSource(tune);
+    analyser = audio_ctx.createAnalyser();
+    //analyser.fftSize = 256;
+    tuneSrc.connect(analyser);
+    
+    if (OUTPUT_SOUND) analyser.connect(audio_ctx.destination);
+
+    frequencyData = new Uint8Array(analyser.frequencyBinCount);
+}
+
+var startTime = null;
+function setStartTime() {
+    startTime = +new Date();
+}
+
+function currentTime() {
+    if (startTime === null) setStartTime();
+    return ( (+new Date() ) - startTime) / 1000;
+}
+
+function timer(sec, min, max) {
+    return ( ( (currentTime() % sec) * (max - min) ) / sec ) + min;
+}
+
+function getFreq() {
+    analyser.getByteFrequencyData(frequencyData);
+
+    return [
+    frequencyData[Math.floor((frequencyData.length/7)*0)],
+    frequencyData[Math.floor((frequencyData.length/7)*1)],
+    frequencyData[Math.floor((frequencyData.length/7)*2)],
+    frequencyData[Math.floor((frequencyData.length/7)*3)],
+    frequencyData[Math.floor((frequencyData.length/7)*4)],
+    frequencyData[Math.floor((frequencyData.length/7)*5)],
+    frequencyData[Math.floor((frequencyData.length/7)*6)]
+    ];
+}
+
+function setCanvasSize() {
+	var scale = 0.5625;    // 16:9 Ratio
+
+	var width = window.innerWidth;
+	var height = window.innerHeight;
+	var top=0, left=0;
+
+	var correctWidth = width;
+	var correctHeight = width*scale;
+
+	if (correctHeight>height) {
+		correctWidth = (1 / scale)*height;
+		correctHeight = height;
+	}
+
+	if(correctWidth<width)
+		left=(width-correctWidth)/2;
+
+	if (correctHeight<height)
+		top=(height-correctHeight)/2;
+
+	//console.log(top);
+	//console.log(left);
+
+	canvas.style.position = "fixed";
+
+	canvas.style.top = top + "px";
+	canvas.style.left = left+"px";
+
+	canvas.width = correctWidth;
+	canvas.height = correctHeight;
+}
+
+function resize() {
+	setCanvasSize();
+}
+
+function URLargs() {
+    var args = {};
+
+    if (! window.location.search) return args;
+
+    var url = String(window.location.search).replace(/^\?/, "").split("&");
+    for(var i in url) {
+        var hash = url[i].match(/(^.*)=(.*$)/);
+        args[String(hash[1]).toUpperCase()] = String(hash[2]).toUpperCase();
+    }
+
+    return args;
+}
+
+function setURLoptions() {
+    var options = URLargs();
+
+    //console.log(options);
+
+    switch(options.RESOLUTION) {
+
+//      Ppowers of 2:
+        case 'VLOW':
+            OFFSCREEN_ASPECT_X = 1.78; OFFSCREEN_ASPECT_Y = 0.5;
+            OFFSCREEN_WIDTH=256;              
+            OFFSCREEN_HEIGHT=256/2;           
+            break;
+
+        case 'VHIGH':
+            OFFSCREEN_ASPECT_X = 1.78; OFFSCREEN_ASPECT_Y = 1;
+            OFFSCREEN_WIDTH=1024;
+            OFFSCREEN_HEIGHT=1024;
+            break;
+
+        case 'LOW':
+            OFFSCREEN_ASPECT_X = 1.78; OFFSCREEN_ASPECT_Y = 0.5;
+            OFFSCREEN_WIDTH=512;
+            OFFSCREEN_HEIGHT=512/2;
+            break;
+
+        case 'HIGH':
+            OFFSCREEN_ASPECT_X = 1.78; OFFSCREEN_ASPECT_Y = 0.5;
+            OFFSCREEN_WIDTH=1024;
+            OFFSCREEN_HEIGHT=1024/2;
+            break;
+
+//  16:9 non-powers of 2:
+        case '640X360':
+        case "SHADERTOY":
+            OFFSCREEN_ASPECT_X = OFFSCREEN_ASPECT_Y = 1;
+            OFFSCREEN_WIDTH=640;
+            OFFSCREEN_HEIGHT=360;
+            break;            
+
+        case '864X486':
+            OFFSCREEN_ASPECT_X = OFFSCREEN_ASPECT_Y = 1;
+            OFFSCREEN_WIDTH=864;
+            OFFSCREEN_HEIGHT=486;
+            break;
+
+        case '1024X576':
+            OFFSCREEN_ASPECT_X = OFFSCREEN_ASPECT_Y = 1;
+            OFFSCREEN_WIDTH=1024;
+            OFFSCREEN_HEIGHT=576;
+            break;
+
+        case '1366X768':
+            OFFSCREEN_ASPECT_X = OFFSCREEN_ASPECT_Y = 1;
+            OFFSCREEN_WIDTH=1366;
+            OFFSCREEN_HEIGHT=768;
+            break;
+
+        case '2048X1152':
+            OFFSCREEN_ASPECT_X = OFFSCREEN_ASPECT_Y = 1;
+            OFFSCREEN_WIDTH=2048;
+            OFFSCREEN_HEIGHT=1152;
+            break;
+
+        case '720X405':
+        default:
+            OFFSCREEN_ASPECT_X = OFFSCREEN_ASPECT_Y = 1;
+            OFFSCREEN_WIDTH=720;
+            OFFSCREEN_HEIGHT=405;
+            break;
+    }
+
+    //console.log("OFFSCREEN = " + OFFSCREEN_WIDTH + ", " + OFFSCREEN_HEIGHT + " : ASPECT = " + OFFSCREEN_ASPECT_X + ", " + OFFSCREEN_ASPECT_Y);
+
+    switch(options.SOUND) {
+        case 'OFF':
+            OUTPUT_SOUND = 0;
+            break;
+
+        case 'ON':
+        default:
+            OUTPUT_SOUND = 1;
+            break;
+    }
+
+    switch(options.SCROLLER) {
+        case '1':
+            SCROLLER = 1;
+            break;
+        case '0':
+        default:
+            SCROLLER = 0;
+            break;
+    }
+
+    switch(options.TUNE) {
+        case '1':
+            tuneName = "music/XAOC - Bon^2.mp3";
+            break;
+
+        case '2':
+            tuneName = "music/synapse - firebug & cce - 4k.mp3"
+            break;
+
+        case '3':
+            tuneName = "music/Hurtquake - excess - 60fps.mp3"
+            break;
+
+        case '0':
+        default:
+            tuneName = "music/F14A - Rebels - 64k.mp3";
+            break;
+    }
+}
+
+
+function main() {
+    setURLoptions();
+
+	canvas = getCanvas('canvas-id');
+	if (!canvas) return;
+
+	setCanvasSize();
+
+    gl = getGLContext(canvas);
+    if (!gl) return;
+   
+	gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
+    initBuffers();
+    initShaders();
+    initOffscreenFramebuffer();
+
+	addEventListener("dblclick", function() {toggleFullScreen();});
+
+    // LOADING
+    document.title = "*** LOADING ***";
+    setStartTime();
+    //console.log("LOADING LOOP")
+    loadingLoop();
+
+    // see loadingLoop() starts real animation...
+}
+function addLoadingResource() {
+    totalResourcesToLoad++;
+    resourcesToLoad++;
+
+    //console.log("addLoadingResource:" + totalResourcesToLoad + ', ' +resourcesToLoad);
+}
+function removeLoadingResource() {
+    resourcesToLoad--;
+
+    //console.log("removeLoadingResource:" + totalResourcesToLoad + ', ' +resourcesToLoad);
+}
+
+var totalResourcesToLoad = 0;
+var resourcesToLoad = 0;
+function loadingLoop() {
+    var t = currentTime();
+
+    if (resourcesToLoad>0  /*|| t<5*/ ) requestAnimFrame(loadingLoop);
+    else {
+        setStartTime();
+        startMusic();
+        renderLoop();
+    }
+
+    //console.log(t + ": " + totalResourcesToLoad + ", " + resourcesToLoad);
+}
+
+function toggleFullScreen() {
+  if (!document.fullscreenElement &&    // alternative standard method
+      !document.mozFullScreenElement && !document.webkitFullscreenElement && !document.msFullscreenElement ) {  // current working methods
+
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen();
+    } else if (document.documentElement.msRequestFullscreen) {
+      document.documentElement.msRequestFullscreen();
+    } else if (document.documentElement.mozRequestFullScreen) {
+      document.documentElement.mozRequestFullScreen();
+    } else if (document.documentElement.webkitRequestFullscreen) {
+      document.documentElement.webkitRequestFullscreen(Element.ALLOW_KEYBOARD_INPUT);
+    }
+  } else {
+    if (document.exitFullscreen) {
+
+      document.exitFullscreen();
+    } else if (document.msExitFullscreen) {
+      document.msExitFullscreen();
+    } else if (document.mozCancelFullScreen) {
+      document.mozCancelFullScreen();
+    } else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    }
+  }
+}
+
+requestAnimFrame = (function() {
+	return window.requestAnimationFrame || window.webkitRequestAnimationFrame || window.mozRequestAnimationFrame || window.oRequestAnimationFrame || window.msRequestAnimationFrame
+	 || function(callback, element) { window.setTimeout(callback, 1000/60); };
+})();
+
+function renderLoop() {
+	requestAnimFrame(renderLoop);
+	drawScene();
+}
+
+var currentEffect = 0;
+
+var fps = 0;
+var deltaTime = 0;
+var previousTime = 0;
+
+function drawScene() {
+	if (startTime === null) {startTime = +new Date();}
+	var currentTime = ( (+new Date() ) - startTime) / 1000;
+
+    deltaTime-=currentTime-previousTime;
+    if (deltaTime<=0) {
+        //console.log("FPS=" + fps + ", CurrentEffect=" + currentEffect);
+        document.title = fps + " FPS";
+        deltaTime = 1;
+        fps = 0;
+    }
+    previousTime = currentTime;
+    fps++;
+
+    // Calc current letter in scrolltext
+    var total_scrolling_time_for_scrolltext_in_seconds = TOTAL_SCROLLING_TIME_IN_SECONDS;
+    var number_of_chars_in_scroller = text.length;
+
+    var textIndex = Math.floor((number_of_chars_in_scroller/total_scrolling_time_for_scrolltext_in_seconds)*(currentTime % total_scrolling_time_for_scrolltext_in_seconds));
+
+    var c = text.charCodeAt(textIndex);
+    if (c < 32) {
+        //console.log("EFFECT CHANGED TO " + c);
+        currentEffect = c;
+    }
+
+
+    // Get audio frequency data
+    var f = getFreq();
+    for(var j=0; j<f.length; j++) {
+        f[j] /= 255;
+        f[j] *= .7;
+    }
+    
+
+    gl.viewport(0,0, OFFSCREEN_WIDTH, OFFSCREEN_HEIGHT);
+
+    //Don't need these
+    //gl.enable(gl.DEPTH_TEST);
+    //gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+	// Draw animation off screen
+	gl.bindFramebuffer(gl.FRAMEBUFFER, offScreenFramebuffer);
+	gl.useProgram(prgAnimation);
+
+    gl.uniform1fv(prgAnimation.ufreq, new Float32Array(f));
+
+	gl.uniform1f(prgAnimation.iGlobalTime, currentTime);
+    gl.uniform3fv(prgAnimation.iResolution, [OFFSCREEN_WIDTH, OFFSCREEN_HEIGHT, 0.]);
+	gl.uniform2fv(prgAnimation.uCanvasResolution, [canvas.width, canvas.height]);
+    gl.uniform2fv(prgAnimation.iAspect, [OFFSCREEN_ASPECT_X, OFFSCREEN_ASPECT_Y]);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexBuffer);
+    gl.vertexAttribPointer(prgAnimation.aVertexPosition, 2, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(prgAnimation.vertexPosition);     
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, squareIndexBuffer);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(prgAnimation.iChannel0, 0);
+
+	gl.activeTexture(gl.TEXTURE1);
+	gl.bindTexture(gl.TEXTURE_CUBE_MAP, cubemapTexture);
+	gl.uniform1i(prgAnimation.iChannel1, 1);
+
+
+    // scrolltext uniforms:
+    gl.uniform1f(prgAnimation.iScrolltextLength, text.length);
+    gl.uniform1i(prgAnimation.iEffect, currentEffect);
+    gl.uniform1f(prgAnimation.iTotalScrollingTimeInSeconds, TOTAL_SCROLLING_TIME_IN_SECONDS);
+
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, fontTexture);
+    gl.uniform1i(prgAnimation.iChannel2, 2);
+
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, scrollText);
+    gl.uniform1i(prgAnimation.iChannel3, 3);
+
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+	gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+
+
+
+	// Render offscreen framebuffer to the webgl canvas
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+	gl.useProgram(prgRender);
+
+	gl.uniform1f(prgRender.iGlobalTime, currentTime);
+	gl.uniform3fv(prgRender.iResolution, [canvas.width, canvas.height, 0.]);
+
+	gl.viewport(0,0, canvas.width, canvas.height);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexBuffer);
+    gl.vertexAttribPointer(prgRender.aVertexPosition, 2, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(prgRender.vertexPosition);     
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, squareIndexBuffer);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, offScreenTexture);
+    gl.uniform1i(prgRender.iChannel0, 0);        
+
+    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+}
+
+var text = null;
+
+var text0 =  
+"\0          HELLO!!! AND WELCOME TO MY LITTLE TEST OF CHROME WEBGL!!!"
++ "          \3           " + 
+"THE CODING IS TERRIBLE, BUT IT KIND OF WORKS FOR NOW! NEXT STEP WILL BE TO START WORKING ON A CLASS TO HANDLE THE WEBGL STUFF."
++ "                   \4                                   " +
+"THIS SCROLL TEXT IS KIND OF JERKY... CRAPPY MODERN HARDWARE - I MISS MY AMIGA!!!"
++ "                                           \1                       " +
+"OK, WHAT CAN I TALK ABOUT NOW?"
++ "                \2                     " + 
+"I HOPE YOU CAN READ THIS!!! "
++ "                    "
+
+var text1 = 
+"\0          HELLO!!! AND WELCOME TO MY LITTLE TEST OF CHROME WEBGL!!!                                            "
++ "                                     \3                                                                                        " + 
+"THE CODING IS TERRIBLE, BUT IT KIND OF WORKS FOR NOW! NEXT STEP WILL BE TO START WORKING ON A CLASS TO HANDLE THE WEBGL STUFF."
++ "                              \0                                      " +
+"THIS SCROLL TEXT IS KIND OF JERKY... CRAPPY MODERN HARDWARE - I MISS MY AMIGA!!!"
++ "                                                               ";
+
+function createScrollerTexture() {
+	//console.log("CREATING SCROLLTEXT TEXTURE");
+	//console.log("TEXT LEN = " + text.length);
+
+    if (SCROLLER == 0) 
+        text = text0;
+    else 
+        text = text1;
+
+	var c = document.createElement("canvas");
+	c.width=2048;
+	c.height=1;
+	
+	var ctx = c.getContext("2d");
+	var d = ctx.createImageData(c.width, c.height);
+	
+	for(var i=0; i<text.length*4; i+=4) {
+
+        var asc = text.charCodeAt(i/4);
+        if (asc<32) {
+            //console.log("GOT CONTROL CODE " + asc)
+            asc = 0;
+        } else {
+            asc -= 32;
+        }
+        var a = asc;
+
+		d.data[i+0] = a;
+		d.data[i+1] = 0;
+		d.data[i+2] = 255;
+		d.data[i+3] = 255;
+	}
+	ctx.putImageData(d, 0, 0);
+
+	scrollText = gl.createTexture();
+	gl.bindTexture(gl.TEXTURE_2D, scrollText);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+	gl.bindTexture(gl.TEXTURE_2D, null);
+	//console.log("END OF CREATING SCROLLTEXT TEXTURE");
+}
+
+function loadCubemap() {
+	cubemapTexturesToLoad = 6;
+
+	for (var i=0; i<6; i++) {
+        addLoadingResource();
+		//console.log("Image " + i + " = " + cubemap_filename[i]);
+		cubemap_image[i] = new Image();
+		cubemap_image[i].onload = createCubemap;
+		cubemap_image[i].src = cubemap_filename[i];
+	}
+
+	// Create blank cubemap so we can reference it before images are fully loaded (if needs be)
+    cubemapTexture = gl.createTexture();
+}
+
+function createCubemap() {
+	//console.log(cubemapTexturesToLoad);
+
+    removeLoadingResource();
+
+	// Wait until all textures are loaded before generating cubemap
+	if (--cubemapTexturesToLoad>0) return;
+
+	//console.log("Setting up cubemap");
+
+	for(var i=0; i<6; i++)
+		//console.log(cubemap_image[i]);
+
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, cubemapTexture);
+
+	gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cubemap_image[0]);
+	gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_Y, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cubemap_image[1]);
+	gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_Z, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cubemap_image[2]);
+	gl.texImage2D(gl.TEXTURE_CUBE_MAP_NEGATIVE_X, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cubemap_image[3]);
+	gl.texImage2D(gl.TEXTURE_CUBE_MAP_NEGATIVE_Y, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cubemap_image[4]);
+	gl.texImage2D(gl.TEXTURE_CUBE_MAP_NEGATIVE_Z, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cubemap_image[5]);
+
+	gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+	gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+	gl.bindTexture(gl.TEXTURE_CUBE_MAP, null);
+}
+
+function initBuffers() {
+    squareVertexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        
+    squareIndexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, squareIndexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+}
+
+function initShaders() {
+	var vxShader, fgShader;
+
+	// Animation shaders:
+    prgAnimation = gl.createProgram();
+    vxShader = getShader('shader-vs');
+    gl.attachShader(prgAnimation, vxShader);
+    fgShader = getShader('shader-animation-fs');
+    gl.attachShader(prgAnimation, fgShader);
+    gl.linkProgram(prgAnimation);
+    
+    if (!gl.getProgramParameter(prgAnimation, gl.LINK_STATUS)) {
+        alert("Could not initialise Animation shaders");
+    }
+
+    //Init texture
+    prgAnimation.iChannel0 = gl.getUniformLocation(prgAnimation, "iChannel0");
+    texture = gl.createTexture();
+    
+    addLoadingResource();
+    var image = new Image();
+    image.onload = function(){
+        removeLoadingResource();
+
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+        gl.generateMipmap(gl.TEXTURE_2D);
+
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+	image.src = 'st/tex07.jpg';
+
+
+	// Init cubemap
+	prgAnimation.iChannel1 = gl.getUniformLocation(prgAnimation, "iChannel1");
+	loadCubemap();
+
+    prgAnimation.ufreq = gl.getUniformLocation(prgAnimation, "ufreq");
+    prgAnimation.iAspect = gl.getUniformLocation(prgAnimation, "iAspect");
+    prgAnimation.iScrolltextLength = gl.getUniformLocation(prgAnimation, "iScrolltextLength");
+    prgAnimation.iEffect = gl.getUniformLocation(prgAnimation, "iEffect");
+    prgAnimation.iTotalScrollingTimeInSeconds = gl.getUniformLocation(prgAnimation, "iTotalScrollingTimeInSeconds");
+
+    prgAnimation.iChannel2 = gl.getUniformLocation(prgAnimation, "iChannel2");
+    fontTexture = gl.createTexture();
+
+    addLoadingResource();
+    var image2 = new Image();
+    image2.onload = function() {
+        removeLoadingResource();
+        //console.log("LOADED FONT");
+        gl.bindTexture(gl.TEXTURE_2D, fontTexture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image2);
+
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+    image2.src = 'textures/knighthawks_font.png';
+
+
+    prgAnimation.iChannel3 = gl.getUniformLocation(prgAnimation, "iChannel3");
+    createScrollerTexture();
+
+
+
+	// Renderer shaders:
+    prgRender = gl.createProgram();
+    vxShader = getShader('shader-vs');
+    gl.attachShader(prgRender, vxShader);
+    fgShader = getShader('shader-render-fs');
+    gl.attachShader(prgRender, fgShader);
+    gl.linkProgram(prgRender);
+    
+    if (!gl.getProgramParameter(prgRender, gl.LINK_STATUS)) {
+        alert("Could not initialise Render shaders");
+    }
+
+    prgAnimation.vertexPosition = gl.getAttribLocation(prgAnimation, "aVertexPosition");
+    prgAnimation.iGlobalTime = gl.getUniformLocation(prgAnimation, "iGlobalTime");
+    prgAnimation.iResolution = gl.getUniformLocation(prgAnimation, "iResolution");
+	prgAnimation.uCanvasResolution = gl.getUniformLocation(prgAnimation, "uCanvasResolution");
+    prgRender.vertexPosition = gl.getAttribLocation(prgRender, "aVertexPosition");
+    prgRender.iGlobalTime = gl.getUniformLocation(prgRender, "iGlobalTime");
+    prgRender.iResolution = gl.getUniformLocation(prgRender, "iResolution");
+    prgRender.iChannel0 = gl.getUniformLocation(prgRender, "iChannel0");
+}
+
+function initOffscreenFramebuffer() {
+    offScreenFramebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, offScreenFramebuffer);
+    offScreenFramebuffer.width = OFFSCREEN_WIDTH;
+    offScreenFramebuffer.height = OFFSCREEN_HEIGHT;
+
+    offScreenTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, offScreenTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, offScreenFramebuffer.width, offScreenFramebuffer.height
+     , 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+    offScreenRenderbuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, offScreenRenderbuffer);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, offScreenFramebuffer.width, offScreenFramebuffer.height);
+
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, offScreenTexture, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, offScreenRenderbuffer);
+
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+// Library functions:
+
+function getCanvas(name) {
+    var canvas = document.getElementById(name);
+
+    if (canvas == null) {
+        alert('there is no canvas on this page');
+        return null;
+    }
+
+    return canvas;
+}
+
+function getGLContext(canvas) {
+    var ctx = null;
+        
+    var names = ["webgl", "experimental-webgl", "webkit-3d", "moz-webgl"];
+    for (var i = 0; i < names.length; ++i) {
+        try {ctx = canvas.getContext(names[i]);}catch(e) {}
+        if (ctx) break;
+    }
+
+    if (ctx == null) {
+        alert("Could not initialise WebGL");
+        return null;
+    } else {return ctx;}
+}
+
+function getShader(id) {
+       var script = document.getElementById(id);
+
+       if (!script)
+           return null;
+
+        var str = "";
+        var k = script.firstChild;
+        while (k) {
+            if (k.nodeType == 3) {
+                str += k.textContent;
+            }
+            k = k.nextSibling;
+        }
+
+        var shader;
+        if (script.type == "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } else if (script.type == "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } else {
+            return null;
+        }
+
+        gl.shaderSource(shader, str);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+        return shader;
+    }
+</script>
+
+</head>
+	<body onLoad='main()' onResize='resize()' margin:0>
+        <canvas id='canvas-id' width='512' height='512' style="border:0px solid #000000;">
+            Your browser does not support the HTML5 canvas element.
+        </canvas>
+	</body>
+</html>
